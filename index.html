@@ -8,30 +8,62 @@
 <title>ZverClaw Запись</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui;background:#1a1a2e;color:#eee;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;-webkit-user-select:none;user-select:none}
-#btn{width:80vw;height:80vw;max-width:320px;max-height:320px;border-radius:50%;border:none;font-size:24px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
-#btn.idle{background:#16213e;color:#e94560;box-shadow:0 0 40px rgba(233,69,96,.3)}
-#btn.rec{background:#e94560;color:#fff;box-shadow:0 0 60px rgba(233,69,96,.6);animation:pulse 1.5s infinite}
-#btn.done{background:#0f3460;color:#4ecca3;box-shadow:0 0 40px rgba(78,204,163,.3)}
+body{font-family:system-ui;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;flex-direction:column;align-items:center;-webkit-user-select:none;user-select:none;padding:16px 12px 120px}
+h2{font-size:18px;margin:12px 0 8px;opacity:.7}
+
+/* record button */
+#rec-area{display:flex;flex-direction:column;align-items:center;margin:20px 0 8px}
+#btn{width:50vw;height:50vw;max-width:200px;max-height:200px;border-radius:50%;border:none;font-size:20px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}
+#btn.idle{background:#16213e;color:#e94560;box-shadow:0 0 30px rgba(233,69,96,.3)}
+#btn.rec{background:#e94560;color:#fff;box-shadow:0 0 50px rgba(233,69,96,.6);animation:pulse 1.5s infinite}
 @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
-#icon{font-size:64px}
-#status{margin-top:24px;font-size:18px;text-align:center;min-height:48px}
-#queue{position:fixed;top:16px;right:16px;background:#0f3460;padding:8px 16px;border-radius:20px;font-size:14px;display:none}
-#queue.show{display:block}
-#timer{font-size:16px;opacity:.7}
+#icon{font-size:48px}
+#timer{font-size:14px;opacity:.7}
+#status{margin-top:10px;font-size:15px;text-align:center;min-height:24px;opacity:.8}
+
+/* list */
+#list{width:100%;max-width:400px}
+.item{background:#16213e;border-radius:12px;padding:12px;margin:8px 0;display:flex;align-items:center;gap:10px}
+.item .num{font-size:22px;font-weight:700;color:#e94560;min-width:28px;text-align:center}
+.item .info{flex:1;font-size:13px;opacity:.8}
+.item .info .dur{font-size:15px;opacity:1;color:#eee}
+.item button{border:none;border-radius:8px;padding:8px 12px;font-size:18px;cursor:pointer;min-width:44px;min-height:44px}
+.item .play{background:#0f3460;color:#4ecca3}
+.item .play.playing{background:#4ecca3;color:#0f3460}
+.item .del{background:#2a1030;color:#e94560}
+.sent{opacity:.4}
+.sent .num{color:#4ecca3}
+
+/* send bar */
+#send-bar{position:fixed;bottom:0;left:0;right:0;background:#0f3460;padding:14px;display:flex;gap:10px;justify-content:center;align-items:center}
+#send-btn{background:#4ecca3;color:#1a1a2e;border:none;border-radius:12px;padding:14px 28px;font-size:18px;font-weight:700;cursor:pointer;flex:1;max-width:300px}
+#send-btn:disabled{opacity:.3}
+#clear-btn{background:#2a1030;color:#e94560;border:none;border-radius:12px;padding:14px 18px;font-size:18px;cursor:pointer}
+#counter{position:fixed;top:12px;right:12px;background:#0f3460;padding:6px 14px;border-radius:16px;font-size:13px}
 </style>
 </head>
 <body>
-<div id="queue"></div>
-<button id="btn" class="idle" onclick="toggle()">
-  <span id="icon">🎙</span>
-  <span id="label">ЗАПИСАТЬ</span>
-  <span id="timer"></span>
-</button>
-<div id="status">Нажми для записи</div>
+
+<div id="counter"></div>
+
+<div id="rec-area">
+  <button id="btn" class="idle" onclick="toggle()">
+    <span id="icon">🎙</span>
+    <span id="label">ЗАПИСАТЬ</span>
+    <span id="timer"></span>
+  </button>
+  <div id="status">Нажми — говори — 3 сек тишины — готово</div>
+</div>
+
+<div id="list"></div>
+
+<div id="send-bar">
+  <button id="clear-btn" onclick="clearAll()">🗑</button>
+  <button id="send-btn" onclick="sendAll()" disabled>📤 Отправить всё</button>
+</div>
 
 <script>
-// Tokens from URL hash (first open) → localStorage (forever)
+// ── Config ──
 function initConfig(){
   const h=new URLSearchParams(location.hash.slice(1));
   if(h.get('t'))localStorage.setItem('zv_token',h.get('t'));
@@ -46,22 +78,27 @@ const SILENCE_MS=3000;
 const DB_NAME='zverclaw_voice';
 const DB_STORE='queue';
 
-let mediaRec=null,chunks=[],recording=false,silenceTimer=null,analyser=null,animFrame=null;
+let mediaRec=null,chunks=[],recording=false,analyser=null,animFrame=null;
 let startTime=0,timerInterval=null;
+let currentAudio=null;
 
 // ── IndexedDB ──
 function openDB(){
   return new Promise((ok,fail)=>{
-    const r=indexedDB.open(DB_NAME,1);
-    r.onupgradeneeded=e=>e.target.result.createObjectStore(DB_STORE,{keyPath:'id',autoIncrement:true});
+    const r=indexedDB.open(DB_NAME,2);
+    r.onupgradeneeded=e=>{
+      const db=e.target.result;
+      if(!db.objectStoreNames.contains(DB_STORE))
+        db.createObjectStore(DB_STORE,{keyPath:'id',autoIncrement:true});
+    };
     r.onsuccess=e=>ok(e.target.result);
     r.onerror=e=>fail(e);
   });
 }
-async function enqueue(blob){
+async function enqueue(blob,durSec){
   const db=await openDB();
   const tx=db.transaction(DB_STORE,'readwrite');
-  tx.objectStore(DB_STORE).add({audio:blob,ts:Date.now()});
+  tx.objectStore(DB_STORE).add({audio:blob,ts:Date.now(),dur:durSec,sent:false});
   return new Promise(ok=>{tx.oncomplete=ok});
 }
 async function getAll(){
@@ -71,38 +108,102 @@ async function getAll(){
     tx.objectStore(DB_STORE).getAll().onsuccess=e=>ok(e.target.result);
   });
 }
+async function markSent(id){
+  const db=await openDB();
+  const tx=db.transaction(DB_STORE,'readwrite');
+  const store=tx.objectStore(DB_STORE);
+  const item=await new Promise(ok=>{store.get(id).onsuccess=e=>ok(e.target.result)});
+  if(item){item.sent=true;store.put(item)}
+  return new Promise(ok=>{tx.oncomplete=ok});
+}
 async function remove(id){
   const db=await openDB();
   const tx=db.transaction(DB_STORE,'readwrite');
   tx.objectStore(DB_STORE).delete(id);
+  return new Promise(ok=>{tx.oncomplete=ok});
 }
-async function queueCount(){
-  const all=await getAll();
-  return all.length;
-}
-
-// ── UI ──
-const btn=document.getElementById('btn'),icon=document.getElementById('icon'),
-      label=document.getElementById('label'),status=document.getElementById('status'),
-      queueEl=document.getElementById('queue'),timerEl=document.getElementById('timer');
-
-function setUI(mode,msg){
-  btn.className=mode;
-  if(mode==='idle'){icon.textContent='🎙';label.textContent='ЗАПИСАТЬ'}
-  if(mode==='rec'){icon.textContent='⏺';label.textContent='ЗАПИСЬ...'}
-  if(mode==='done'){icon.textContent='✅';label.textContent='СОХРАНЕНО'}
-  status.textContent=msg||'';
+async function clearAllDB(){
+  const db=await openDB();
+  const tx=db.transaction(DB_STORE,'readwrite');
+  tx.objectStore(DB_STORE).clear();
+  return new Promise(ok=>{tx.oncomplete=ok});
 }
 
-async function updateQueue(){
-  const n=await queueCount();
-  if(n>0){queueEl.textContent=`📦 ${n} в очереди`;queueEl.className='show'}
-  else{queueEl.className=''}
-}
+// ── UI refs ──
+const btn=document.getElementById('btn'),iconEl=document.getElementById('icon'),
+      labelEl=document.getElementById('label'),statusEl=document.getElementById('status'),
+      timerEl=document.getElementById('timer'),listEl=document.getElementById('list'),
+      sendBtn=document.getElementById('send-btn'),counterEl=document.getElementById('counter');
 
 function fmtTime(ms){
   const s=Math.floor(ms/1000);
   return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+}
+function fmtClock(ts){
+  const d=new Date(ts);
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+function setBtn(mode,msg){
+  btn.className=mode;
+  if(mode==='idle'){iconEl.textContent='🎙';labelEl.textContent='ЗАПИСАТЬ'}
+  if(mode==='rec'){iconEl.textContent='⏺';labelEl.textContent='СТОП'}
+  statusEl.textContent=msg||'';
+}
+
+// ── Render list ──
+async function renderList(){
+  const all=await getAll();
+  const unsent=all.filter(x=>!x.sent);
+  listEl.innerHTML='';
+  if(all.length===0){
+    counterEl.textContent='';
+    sendBtn.disabled=true;
+    sendBtn.textContent='📤 Отправить всё';
+    return;
+  }
+  counterEl.textContent=`${unsent.length} запис${unsent.length===1?'ь':unsent.length<5?'и':'ей'}`;
+  sendBtn.disabled=unsent.length===0;
+  sendBtn.textContent=unsent.length>0?`📤 Отправить (${unsent.length})`:'✅ Всё отправлено';
+
+  all.forEach((item,i)=>{
+    const div=document.createElement('div');
+    div.className='item'+(item.sent?' sent':'');
+    div.innerHTML=`
+      <span class="num">${i+1}</span>
+      <div class="info">
+        <div class="dur">${fmtTime(item.dur*1000)}</div>
+        <div>${fmtClock(item.ts)}${item.sent?' — отправлено ✅':''}</div>
+      </div>
+      <button class="play" data-id="${item.id}">▶</button>
+      ${item.sent?'':`<button class="del" data-id="${item.id}">✕</button>`}
+    `;
+    listEl.appendChild(div);
+  });
+
+  // play buttons
+  listEl.querySelectorAll('.play').forEach(b=>{
+    b.onclick=async()=>{
+      if(currentAudio){currentAudio.pause();document.querySelectorAll('.play.playing').forEach(x=>{x.classList.remove('playing');x.textContent='▶'})}
+      const id=Number(b.dataset.id);
+      const items=await getAll();
+      const item=items.find(x=>x.id===id);
+      if(!item)return;
+      const url=URL.createObjectURL(item.audio);
+      currentAudio=new Audio(url);
+      b.classList.add('playing');b.textContent='⏸';
+      currentAudio.onended=()=>{b.classList.remove('playing');b.textContent='▶';URL.revokeObjectURL(url)};
+      currentAudio.play();
+    };
+  });
+
+  // delete buttons
+  listEl.querySelectorAll('.del').forEach(b=>{
+    b.onclick=async()=>{
+      await remove(Number(b.dataset.id));
+      renderList();
+    };
+  });
 }
 
 // ── Recording ──
@@ -115,16 +216,17 @@ async function startRec(){
     mediaRec.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
       clearInterval(timerInterval);timerEl.textContent='';
-      if(chunks.length===0){setUI('idle','Пустая запись');return}
+      if(chunks.length===0){setBtn('idle','Пустая запись');return}
       const blob=new Blob(chunks,{type:'audio/ogg'});
-      await enqueue(blob);
-      setUI('done','Сохранено! Отправлю когда будет сеть');
-      await updateQueue();
-      trySend();
-      setTimeout(()=>{if(!recording)setUI('idle','Нажми для записи')},2000);
+      const dur=Math.round((Date.now()-startTime)/1000);
+      await enqueue(blob,dur);
+      setBtn('idle','Нажми — говори — 3 сек тишины — готово');
+      await renderList();
+      // scroll to bottom
+      window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
     };
 
-    // silence detection via analyser
+    // silence detection
     const ctx=new AudioContext();
     const src=ctx.createMediaStreamSource(stream);
     analyser=ctx.createAnalyser();
@@ -148,10 +250,10 @@ async function startRec(){
     recording=true;
     startTime=Date.now();
     timerInterval=setInterval(()=>{timerEl.textContent=fmtTime(Date.now()-startTime)},500);
-    setUI('rec','Говори... (остановлюсь через 3 сек тишины)');
+    setBtn('rec','Говори... (3 сек тишины → стоп)');
     checkSilence();
   }catch(e){
-    setUI('idle','Ошибка микрофона: '+e.message);
+    setBtn('idle','Ошибка микрофона: '+e.message);
   }
 }
 
@@ -165,33 +267,45 @@ function toggle(){
   if(recording)stopRec();else startRec();
 }
 
-// ── Send queue ──
-async function trySend(){
-  if(!navigator.onLine)return;
+// ── Send ──
+async function sendAll(){
+  if(!navigator.onLine){statusEl.textContent='Нет сети — отправлю когда появится';return}
   const all=await getAll();
-  for(const item of all){
+  const unsent=all.filter(x=>!x.sent);
+  if(unsent.length===0)return;
+  sendBtn.disabled=true;
+  sendBtn.textContent='📤 Отправка...';
+  let ok=0;
+  for(const item of unsent){
     try{
       const fd=new FormData();
       fd.append('chat_id',CHAT_ID);
       fd.append('voice',item.audio,'voice.ogg');
       const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendVoice`,{method:'POST',body:fd});
-      if(r.ok){await remove(item.id)}
-      else{console.error('send fail',await r.text());break}
+      if(r.ok){await markSent(item.id);ok++}
+      else break;
     }catch(e){break}
   }
-  await updateQueue();
+  statusEl.textContent=ok===unsent.length?`Отправлено ${ok} из ${unsent.length} ✅`:`Отправлено ${ok}/${unsent.length} (нет сети?)`;
+  await renderList();
 }
 
+async function clearAll(){
+  const all=await getAll();
+  const unsent=all.filter(x=>!x.sent);
+  if(unsent.length>0&&!confirm(`Удалить ${unsent.length} неотправленных записей?`))return;
+  await clearAllDB();
+  renderList();
+}
+
+// ── Init ──
 if(!BOT_TOKEN||!CHAT_ID){
-  status.textContent='Откройте ссылку с настройками (токен не найден)';
+  statusEl.textContent='Откройте ссылку с настройками (токен не найден)';
   btn.disabled=true;btn.style.opacity='.3';
 }else{
-  window.addEventListener('online',trySend);
-  setInterval(trySend,30000);
-  updateQueue();
+  renderList();
 }
 
-// ── Service Worker ──
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('sw.js').catch(e=>console.log('SW fail',e));
 }
