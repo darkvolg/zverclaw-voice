@@ -209,7 +209,7 @@ async function renderList(){
         const fd=new FormData();
         fd.append('audio',item.audio,'voice.ogg');
         const r=await fetch(`${VOICE_API}/voice?key=${API_KEY}`,{method:'POST',body:fd});
-        if(r.ok){await markSent(id);statusEl.textContent='Отправлено ✅'}
+        if(r.ok){await remove(id);statusEl.textContent='Отправлено ✅'}
         else statusEl.textContent='Ошибка отправки';
       }catch(e){statusEl.textContent=`Сеть: ${e.message}`}
       await renderList();
@@ -289,7 +289,7 @@ async function sendAll(){
       const fd=new FormData();
       fd.append('audio',unsent[i].audio,'voice.ogg');
       const r=await fetch(`${VOICE_API}/voice?key=${API_KEY}`,{method:'POST',body:fd});
-      if(r.ok){await markSent(unsent[i].id);ok++}
+      if(r.ok){await remove(unsent[i].id);ok++}
       else{const t=await r.text();statusEl.textContent=`Ошибка: ${t.slice(0,80)}`;break}
     }catch(e){statusEl.textContent=`Сеть: ${e.message}`;break}
   }
