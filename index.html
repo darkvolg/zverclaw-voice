@@ -66,7 +66,7 @@ const DB_NAME='zverclaw_voice';
 const DB_STORE='queue';
 let mediaRec=null,chunks=[],recording=false,analyser=null,animFrame=null;
 let startTime=0,timerInterval=null;
-let currentAudio=null,currentPlayBtn=null;
+let currentAudio=null,currentPlayBtn=null,currentAudioUrl=null;
 
 function openDB(){
   return new Promise((ok,fail)=>{
@@ -128,9 +128,15 @@ function setBtn(mode,msg){
   statusEl.textContent=msg||'';
 }
 
-function stopAudio(){
-  if(currentAudio){currentAudio.pause();currentAudio=null}
-  if(currentPlayBtn){currentPlayBtn.classList.remove('playing');currentPlayBtn.textContent='▶';currentPlayBtn=null}
+function stopAudio(full){
+  if(currentAudio){
+    currentAudio.pause();
+    if(full){
+      if(currentAudioUrl)URL.revokeObjectURL(currentAudioUrl);
+      currentAudio=null;currentAudioUrl=null;
+    }
+  }
+  if(currentPlayBtn){currentPlayBtn.classList.remove('playing');currentPlayBtn.textContent='▶';if(full)currentPlayBtn=null}
 }
 
 async function renderList(){
@@ -165,29 +171,33 @@ async function renderList(){
   listEl.querySelectorAll('.play').forEach(b=>{
     b.onclick=async()=>{
       const id=Number(b.dataset.id);
-      // same button → toggle pause
-      if(currentPlayBtn===b){
-        stopAudio();
+      // same button → resume or pause
+      if(currentPlayBtn===b&&currentAudio){
+        if(currentAudio.paused){
+          b.classList.add('playing');b.textContent='⏸';
+          currentAudio.play();
+        }else{
+          stopAudio(false);
+        }
         return;
       }
-      // stop previous
-      stopAudio();
-      // play new
+      // different button → stop old, play new
+      stopAudio(true);
       const items=await getAll();
       const item=items.find(x=>x.id===id);
       if(!item)return;
-      const url=URL.createObjectURL(item.audio);
-      currentAudio=new Audio(url);
+      currentAudioUrl=URL.createObjectURL(item.audio);
+      currentAudio=new Audio(currentAudioUrl);
       currentPlayBtn=b;
       b.classList.add('playing');b.textContent='⏸';
-      currentAudio.onended=()=>{stopAudio();URL.revokeObjectURL(url)};
+      currentAudio.onended=()=>{stopAudio(true)};
       currentAudio.play();
     };
   });
 
   listEl.querySelectorAll('.del').forEach(b=>{
     b.onclick=async()=>{
-      stopAudio();
+      stopAudio(true);
       await remove(Number(b.dataset.id));
       renderList();
     };
@@ -196,7 +206,7 @@ async function renderList(){
 
 async function startRec(){
   try{
-    stopAudio();
+    stopAudio(true);
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     mediaRec=new MediaRecorder(stream,{mimeType:'audio/webm;codecs=opus'});
     chunks=[];
