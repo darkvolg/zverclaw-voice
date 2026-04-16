@@ -9,9 +9,6 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;flex-direction:column;align-items:center;-webkit-user-select:none;user-select:none;padding:16px 12px 120px}
-h2{font-size:18px;margin:12px 0 8px;opacity:.7}
-
-/* record button */
 #rec-area{display:flex;flex-direction:column;align-items:center;margin:20px 0 8px}
 #btn{width:50vw;height:50vw;max-width:200px;max-height:200px;border-radius:50%;border:none;font-size:20px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}
 #btn.idle{background:#16213e;color:#e94560;box-shadow:0 0 30px rgba(233,69,96,.3)}
@@ -20,8 +17,6 @@ h2{font-size:18px;margin:12px 0 8px;opacity:.7}
 #icon{font-size:48px}
 #timer{font-size:14px;opacity:.7}
 #status{margin-top:10px;font-size:15px;text-align:center;min-height:24px;opacity:.8}
-
-/* list */
 #list{width:100%;max-width:400px}
 .item{background:#16213e;border-radius:12px;padding:12px;margin:8px 0;display:flex;align-items:center;gap:10px}
 .item .num{font-size:22px;font-weight:700;color:#e94560;min-width:28px;text-align:center}
@@ -33,8 +28,6 @@ h2{font-size:18px;margin:12px 0 8px;opacity:.7}
 .item .del{background:#2a1030;color:#e94560}
 .sent{opacity:.4}
 .sent .num{color:#4ecca3}
-
-/* send bar */
 #send-bar{position:fixed;bottom:0;left:0;right:0;background:#0f3460;padding:14px;display:flex;gap:10px;justify-content:center;align-items:center}
 #send-btn{background:#4ecca3;color:#1a1a2e;border:none;border-radius:12px;padding:14px 28px;font-size:18px;font-weight:700;cursor:pointer;flex:1;max-width:300px}
 #send-btn:disabled{opacity:.3}
@@ -43,9 +36,7 @@ h2{font-size:18px;margin:12px 0 8px;opacity:.7}
 </style>
 </head>
 <body>
-
 <div id="counter"></div>
-
 <div id="rec-area">
   <button id="btn" class="idle" onclick="toggle()">
     <span id="icon">🎙</span>
@@ -54,16 +45,12 @@ h2{font-size:18px;margin:12px 0 8px;opacity:.7}
   </button>
   <div id="status">Нажми — говори — 3 сек тишины — готово</div>
 </div>
-
 <div id="list"></div>
-
 <div id="send-bar">
   <button id="clear-btn" onclick="clearAll()">🗑</button>
   <button id="send-btn" onclick="sendAll()" disabled>📤 Отправить всё</button>
 </div>
-
 <script>
-// ── Config ──
 function initConfig(){
   const h=new URLSearchParams(location.hash.slice(1));
   if(h.get('t'))localStorage.setItem('zv_token',h.get('t'));
@@ -77,12 +64,10 @@ const CHAT_ID=CFG.chat||'';
 const SILENCE_MS=3000;
 const DB_NAME='zverclaw_voice';
 const DB_STORE='queue';
-
 let mediaRec=null,chunks=[],recording=false,analyser=null,animFrame=null;
 let startTime=0,timerInterval=null;
-let currentAudio=null;
+let currentAudio=null,currentPlayBtn=null;
 
-// ── IndexedDB ──
 function openDB(){
   return new Promise((ok,fail)=>{
     const r=indexedDB.open(DB_NAME,2);
@@ -129,21 +114,13 @@ async function clearAllDB(){
   return new Promise(ok=>{tx.oncomplete=ok});
 }
 
-// ── UI refs ──
 const btn=document.getElementById('btn'),iconEl=document.getElementById('icon'),
       labelEl=document.getElementById('label'),statusEl=document.getElementById('status'),
       timerEl=document.getElementById('timer'),listEl=document.getElementById('list'),
       sendBtn=document.getElementById('send-btn'),counterEl=document.getElementById('counter');
 
-function fmtTime(ms){
-  const s=Math.floor(ms/1000);
-  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
-}
-function fmtClock(ts){
-  const d=new Date(ts);
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
-
+function fmtTime(ms){const s=Math.floor(ms/1000);return`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`}
+function fmtClock(ts){const d=new Date(ts);return`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`}
 function setBtn(mode,msg){
   btn.className=mode;
   if(mode==='idle'){iconEl.textContent='🎙';labelEl.textContent='ЗАПИСАТЬ'}
@@ -151,7 +128,11 @@ function setBtn(mode,msg){
   statusEl.textContent=msg||'';
 }
 
-// ── Render list ──
+function stopAudio(){
+  if(currentAudio){currentAudio.pause();currentAudio=null}
+  if(currentPlayBtn){currentPlayBtn.classList.remove('playing');currentPlayBtn.textContent='▶';currentPlayBtn=null}
+}
+
 async function renderList(){
   const all=await getAll();
   const unsent=all.filter(x=>!x.sent);
@@ -181,34 +162,41 @@ async function renderList(){
     listEl.appendChild(div);
   });
 
-  // play buttons
   listEl.querySelectorAll('.play').forEach(b=>{
     b.onclick=async()=>{
-      if(currentAudio){currentAudio.pause();document.querySelectorAll('.play.playing').forEach(x=>{x.classList.remove('playing');x.textContent='▶'})}
       const id=Number(b.dataset.id);
+      // same button → toggle pause
+      if(currentPlayBtn===b){
+        stopAudio();
+        return;
+      }
+      // stop previous
+      stopAudio();
+      // play new
       const items=await getAll();
       const item=items.find(x=>x.id===id);
       if(!item)return;
       const url=URL.createObjectURL(item.audio);
       currentAudio=new Audio(url);
+      currentPlayBtn=b;
       b.classList.add('playing');b.textContent='⏸';
-      currentAudio.onended=()=>{b.classList.remove('playing');b.textContent='▶';URL.revokeObjectURL(url)};
+      currentAudio.onended=()=>{stopAudio();URL.revokeObjectURL(url)};
       currentAudio.play();
     };
   });
 
-  // delete buttons
   listEl.querySelectorAll('.del').forEach(b=>{
     b.onclick=async()=>{
+      stopAudio();
       await remove(Number(b.dataset.id));
       renderList();
     };
   });
 }
 
-// ── Recording ──
 async function startRec(){
   try{
+    stopAudio();
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     mediaRec=new MediaRecorder(stream,{mimeType:'audio/webm;codecs=opus'});
     chunks=[];
@@ -222,11 +210,8 @@ async function startRec(){
       await enqueue(blob,dur);
       setBtn('idle','Нажми — говори — 3 сек тишины — готово');
       await renderList();
-      // scroll to bottom
       window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
     };
-
-    // silence detection
     const ctx=new AudioContext();
     const src=ctx.createMediaStreamSource(stream);
     analyser=ctx.createAnalyser();
@@ -234,40 +219,29 @@ async function startRec(){
     src.connect(analyser);
     const buf=new Uint8Array(analyser.frequencyBinCount);
     let lastSound=Date.now();
-
     function checkSilence(){
       if(!recording)return;
       analyser.getByteFrequencyData(buf);
       const avg=buf.reduce((a,b)=>a+b,0)/buf.length;
       if(avg>8)lastSound=Date.now();
-      if(Date.now()-lastSound>SILENCE_MS && Date.now()-startTime>1500){
-        stopRec();return;
-      }
+      if(Date.now()-lastSound>SILENCE_MS&&Date.now()-startTime>1500){stopRec();return}
       animFrame=requestAnimationFrame(checkSilence);
     }
-
     mediaRec.start(500);
     recording=true;
     startTime=Date.now();
     timerInterval=setInterval(()=>{timerEl.textContent=fmtTime(Date.now()-startTime)},500);
     setBtn('rec','Говори... (3 сек тишины → стоп)');
     checkSilence();
-  }catch(e){
-    setBtn('idle','Ошибка микрофона: '+e.message);
-  }
+  }catch(e){setBtn('idle','Ошибка микрофона: '+e.message)}
 }
-
 function stopRec(){
   recording=false;
   if(animFrame)cancelAnimationFrame(animFrame);
   if(mediaRec&&mediaRec.state==='recording')mediaRec.stop();
 }
+function toggle(){if(recording)stopRec();else startRec()}
 
-function toggle(){
-  if(recording)stopRec();else startRec();
-}
-
-// ── Send ──
 async function sendAll(){
   if(!navigator.onLine){statusEl.textContent='Нет сети — отправлю когда появится';return}
   const all=await getAll();
@@ -286,25 +260,21 @@ async function sendAll(){
       else break;
     }catch(e){break}
   }
-  statusEl.textContent=ok===unsent.length?`Отправлено ${ok} из ${unsent.length} ✅`:`Отправлено ${ok}/${unsent.length} (нет сети?)`;
+  statusEl.textContent=ok===unsent.length?`Отправлено ${ok} ✅`:`Отправлено ${ok}/${unsent.length} (нет сети?)`;
   await renderList();
 }
-
 async function clearAll(){
   const all=await getAll();
   const unsent=all.filter(x=>!x.sent);
-  if(unsent.length>0&&!confirm(`Удалить ${unsent.length} неотправленных записей?`))return;
+  if(unsent.length>0&&!confirm(`Удалить ${unsent.length} неотправленных?`))return;
   await clearAllDB();
   renderList();
 }
 
-// ── Init ──
 if(!BOT_TOKEN||!CHAT_ID){
-  statusEl.textContent='Откройте ссылку с настройками (токен не найден)';
+  statusEl.textContent='Откройте ссылку с настройками';
   btn.disabled=true;btn.style.opacity='.3';
-}else{
-  renderList();
-}
+}else{renderList()}
 
 if('serviceWorker' in navigator){
   navigator.serviceWorker.register('sw.js').catch(e=>console.log('SW fail',e));

@@ -1,4 +1,4 @@
-const CACHE='zverclaw-v2';
+const CACHE='zverclaw-v3';
 const URLS=['index.html','manifest.json'];
 
 self.addEventListener('install',e=>{
