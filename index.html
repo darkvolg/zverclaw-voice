@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="theme-color" content="#1a1a2e">
+<link rel="manifest" href="manifest.json">
+<title>ZverClaw Запись</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui;background:#1a1a2e;color:#eee;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;-webkit-user-select:none;user-select:none}
+#btn{width:80vw;height:80vw;max-width:320px;max-height:320px;border-radius:50%;border:none;font-size:24px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
+#btn.idle{background:#16213e;color:#e94560;box-shadow:0 0 40px rgba(233,69,96,.3)}
+#btn.rec{background:#e94560;color:#fff;box-shadow:0 0 60px rgba(233,69,96,.6);animation:pulse 1.5s infinite}
+#btn.done{background:#0f3460;color:#4ecca3;box-shadow:0 0 40px rgba(78,204,163,.3)}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
+#icon{font-size:64px}
+#status{margin-top:24px;font-size:18px;text-align:center;min-height:48px}
+#queue{position:fixed;top:16px;right:16px;background:#0f3460;padding:8px 16px;border-radius:20px;font-size:14px;display:none}
+#queue.show{display:block}
+#timer{font-size:16px;opacity:.7}
+</style>
+</head>
+<body>
+<div id="queue"></div>
+<button id="btn" class="idle" onclick="toggle()">
+  <span id="icon">🎙</span>
+  <span id="label">ЗАПИСАТЬ</span>
+  <span id="timer"></span>
+</button>
+<div id="status">Нажми для записи</div>
+
+<script>
+// Tokens from URL hash (first open) → localStorage (forever)
+function initConfig(){
+  const h=new URLSearchParams(location.hash.slice(1));
+  if(h.get('t'))localStorage.setItem('zv_token',h.get('t'));
+  if(h.get('c'))localStorage.setItem('zv_chat',h.get('c'));
+  if(location.hash)history.replaceState(null,'',location.pathname);
+  return{token:localStorage.getItem('zv_token'),chat:localStorage.getItem('zv_chat')};
+}
+const CFG=initConfig();
+const BOT_TOKEN=CFG.token||'';
+const CHAT_ID=CFG.chat||'';
+const SILENCE_MS=3000;
+const DB_NAME='zverclaw_voice';
+const DB_STORE='queue';
+
+let mediaRec=null,chunks=[],recording=false,silenceTimer=null,analyser=null,animFrame=null;
+let startTime=0,timerInterval=null;
+
+// ── IndexedDB ──
+function openDB(){
+  return new Promise((ok,fail)=>{
+    const r=indexedDB.open(DB_NAME,1);
+    r.onupgradeneeded=e=>e.target.result.createObjectStore(DB_STORE,{keyPath:'id',autoIncrement:true});
+    r.onsuccess=e=>ok(e.target.result);
+    r.onerror=e=>fail(e);
+  });
+}
+async function enqueue(blob){
+  const db=await openDB();
+  const tx=db.transaction(DB_STORE,'readwrite');
+  tx.objectStore(DB_STORE).add({audio:blob,ts:Date.now()});
+  return new Promise(ok=>{tx.oncomplete=ok});
+}
+async function getAll(){
+  const db=await openDB();
+  return new Promise(ok=>{
+    const tx=db.transaction(DB_STORE,'readonly');
+    tx.objectStore(DB_STORE).getAll().onsuccess=e=>ok(e.target.result);
+  });
+}
+async function remove(id){
+  const db=await openDB();
+  const tx=db.transaction(DB_STORE,'readwrite');
+  tx.objectStore(DB_STORE).delete(id);
+}
+async function queueCount(){
+  const all=await getAll();
+  return all.length;
+}
+
+// ── UI ──
+const btn=document.getElementById('btn'),icon=document.getElementById('icon'),
+      label=document.getElementById('label'),status=document.getElementById('status'),
+      queueEl=document.getElementById('queue'),timerEl=document.getElementById('timer');
+
+function setUI(mode,msg){
+  btn.className=mode;
+  if(mode==='idle'){icon.textContent='🎙';label.textContent='ЗАПИСАТЬ'}
+  if(mode==='rec'){icon.textContent='⏺';label.textContent='ЗАПИСЬ...'}
+  if(mode==='done'){icon.textContent='✅';label.textContent='СОХРАНЕНО'}
+  status.textContent=msg||'';
+}
+
+async function updateQueue(){
+  const n=await queueCount();
+  if(n>0){queueEl.textContent=`📦 ${n} в очереди`;queueEl.className='show'}
+  else{queueEl.className=''}
+}
+
+function fmtTime(ms){
+  const s=Math.floor(ms/1000);
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+}
+
+// ── Recording ──
+async function startRec(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    mediaRec=new MediaRecorder(stream,{mimeType:'audio/webm;codecs=opus'});
+    chunks=[];
+    mediaRec.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data)};
+    mediaRec.onstop=async()=>{
+      stream.getTracks().forEach(t=>t.stop());
+      clearInterval(timerInterval);timerEl.textContent='';
+      if(chunks.length===0){setUI('idle','Пустая запись');return}
+      const blob=new Blob(chunks,{type:'audio/ogg'});
+      await enqueue(blob);
+      setUI('done','Сохранено! Отправлю когда будет сеть');
+      await updateQueue();
+      trySend();
+      setTimeout(()=>{if(!recording)setUI('idle','Нажми для записи')},2000);
+    };
+
+    // silence detection via analyser
+    const ctx=new AudioContext();
+    const src=ctx.createMediaStreamSource(stream);
+    analyser=ctx.createAnalyser();
+    analyser.fftSize=512;
+    src.connect(analyser);
+    const buf=new Uint8Array(analyser.frequencyBinCount);
+    let lastSound=Date.now();
+
+    function checkSilence(){
+      if(!recording)return;
+      analyser.getByteFrequencyData(buf);
+      const avg=buf.reduce((a,b)=>a+b,0)/buf.length;
+      if(avg>8)lastSound=Date.now();
+      if(Date.now()-lastSound>SILENCE_MS && Date.now()-startTime>1500){
+        stopRec();return;
+      }
+      animFrame=requestAnimationFrame(checkSilence);
+    }
+
+    mediaRec.start(500);
+    recording=true;
+    startTime=Date.now();
+    timerInterval=setInterval(()=>{timerEl.textContent=fmtTime(Date.now()-startTime)},500);
+    setUI('rec','Говори... (остановлюсь через 3 сек тишины)');
+    checkSilence();
+  }catch(e){
+    setUI('idle','Ошибка микрофона: '+e.message);
+  }
+}
+
+function stopRec(){
+  recording=false;
+  if(animFrame)cancelAnimationFrame(animFrame);
+  if(mediaRec&&mediaRec.state==='recording')mediaRec.stop();
+}
+
+function toggle(){
+  if(recording)stopRec();else startRec();
+}
+
+// ── Send queue ──
+async function trySend(){
+  if(!navigator.onLine)return;
+  const all=await getAll();
+  for(const item of all){
+    try{
+      const fd=new FormData();
+      fd.append('chat_id',CHAT_ID);
+      fd.append('voice',item.audio,'voice.ogg');
+      const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendVoice`,{method:'POST',body:fd});
+      if(r.ok){await remove(item.id)}
+      else{console.error('send fail',await r.text());break}
+    }catch(e){break}
+  }
+  await updateQueue();
+}
+
+if(!BOT_TOKEN||!CHAT_ID){
+  status.textContent='Откройте ссылку с настройками (токен не найден)';
+  btn.disabled=true;btn.style.opacity='.3';
+}else{
+  window.addEventListener('online',trySend);
+  setInterval(trySend,30000);
+  updateQueue();
+}
+
+// ── Service Worker ──
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(e=>console.log('SW fail',e));
+}
+</script>
+</body>
+</html>
