@@ -163,6 +163,7 @@ async function renderList(){
         <div>${fmtClock(item.ts)}${item.sent?' — отправлено ✅':''}</div>
       </div>
       <button class="play" data-id="${item.id}">▶</button>
+      ${item.sent?'':`<button class="send-one" data-id="${item.id}" style="background:#0f3460;color:#4ecca3">📤</button>`}
       ${item.sent?'':`<button class="del" data-id="${item.id}">✕</button>`}
     `;
     listEl.appendChild(div);
@@ -192,6 +193,26 @@ async function renderList(){
       b.classList.add('playing');b.textContent='⏸';
       currentAudio.onended=()=>{stopAudio(true)};
       currentAudio.play();
+    };
+  });
+
+  // send-one buttons
+  listEl.querySelectorAll('.send-one').forEach(b=>{
+    b.onclick=async()=>{
+      if(!navigator.onLine){statusEl.textContent='Нет сети';return}
+      const id=Number(b.dataset.id);
+      const items=await getAll();
+      const item=items.find(x=>x.id===id);
+      if(!item)return;
+      b.textContent='⏳';b.disabled=true;
+      try{
+        const fd=new FormData();
+        fd.append('audio',item.audio,'voice.ogg');
+        const r=await fetch(`${VOICE_API}/voice?key=${API_KEY}`,{method:'POST',body:fd});
+        if(r.ok){await markSent(id);statusEl.textContent='Отправлено ✅'}
+        else statusEl.textContent='Ошибка отправки';
+      }catch(e){statusEl.textContent=`Сеть: ${e.message}`}
+      await renderList();
     };
   });
 
