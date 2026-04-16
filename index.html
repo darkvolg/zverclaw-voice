@@ -252,25 +252,27 @@ function stopRec(){
 }
 function toggle(){if(recording)stopRec();else startRec()}
 
+const VOICE_API='https://ha.vzik-tech.ru/voice-api';
+const API_KEY='zv-voice-2026';
+
 async function sendAll(){
   if(!navigator.onLine){statusEl.textContent='Нет сети — отправлю когда появится';return}
   const all=await getAll();
   const unsent=all.filter(x=>!x.sent);
   if(unsent.length===0)return;
   sendBtn.disabled=true;
-  sendBtn.textContent='📤 Отправка...';
   let ok=0;
-  for(const item of unsent){
+  for(let i=0;i<unsent.length;i++){
+    sendBtn.textContent=`📤 ${i+1}/${unsent.length}...`;
     try{
       const fd=new FormData();
-      fd.append('chat_id',CHAT_ID);
-      fd.append('voice',item.audio,'voice.ogg');
-      const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendVoice`,{method:'POST',body:fd});
-      if(r.ok){await markSent(item.id);ok++}
-      else break;
-    }catch(e){break}
+      fd.append('audio',unsent[i].audio,'voice.ogg');
+      const r=await fetch(`${VOICE_API}/voice?key=${API_KEY}`,{method:'POST',body:fd});
+      if(r.ok){await markSent(unsent[i].id);ok++}
+      else{const t=await r.text();statusEl.textContent=`Ошибка: ${t.slice(0,80)}`;break}
+    }catch(e){statusEl.textContent=`Сеть: ${e.message}`;break}
   }
-  statusEl.textContent=ok===unsent.length?`Отправлено ${ok} ✅`:`Отправлено ${ok}/${unsent.length} (нет сети?)`;
+  if(ok>0)statusEl.textContent=ok===unsent.length?`Отправлено ${ok} ✅ — бот обработает и ответит`:`Отправлено ${ok}/${unsent.length}`;
   await renderList();
 }
 async function clearAll(){
